@@ -1,33 +1,116 @@
-#include <linux/module.h>
-#include <linux/proc_fs.h>
-#include <linux/seq_file.h>
+/*  
+ *  gribble_module.c
+ *
+ * This code consists of a blend of my own contributions, as well
+ * as modifications to example code within the Linux Kernel Module
+ * Programming Guide, by Peter Jay Salzman, Michael Burian, and
+ * Ori Pomerantz.  The Linux Kernel Module Programming Guide is
+ * currently available on the Web, at:
+ *
+ *     http://tldp.org/LDP/lkmpg/2.6/html/index.html
+ *
+ * I used their hello-1.c, hello-4.c, and procfs1.c examples as the basis
+ * for my overall module structure, as well as to solve the problem of
+ * inserting get_num_pagefaults into the /proc filesystem.
+ */
+#include <linux/module.h>	/* Needed by all modules */
+#include <linux/kernel.h>	/* Needed for KERN_INFO */
+#include <linux/mm.h>           /* Needed for vmstat.h */
+#include <linux/vmstat.h>       /* Needed for all_vm_events */
+#include <linux/proc_fs.h>      /* Needed for inserting into /proc */
 
-static int hello_proc_show(struct seq_file *m, void *v) {
-  seq_printf(m, "Hello proc!\n");
-  return 0;
-}
-
-static int hello_proc_open(struct inode *inode, struct  file *file) {
-  return single_open(file, hello_proc_show, NULL);
-}
-
-static const struct file_operations hello_proc_fops = {
-  .owner = THIS_MODULE,
-  .open = hello_proc_open,
-  .read = seq_read,
-  .llseek = seq_lseek,
-  .release = single_release,
-};
-
-static int __init hello_proc_init(void) {
-  proc_create("hello_proc", 0, NULL, &hello_proc_fops);
-  return 0;
-}
-
-static void __exit hello_proc_exit(void) {
-  remove_proc_entry("hello_proc", NULL);
-}
+#define DRIVER_AUTHOR "Steven Gribble <gribble (at) cs.washington DOT edu>"
+#define DRIVER_DESC   "CSE551 sp07 assignment 2 example solution"
 
 MODULE_LICENSE("GPL");
-module_init(hello_proc_init);
-module_exit(hello_proc_exit);
+MODULE_AUTHOR(DRIVER_AUTHOR);	        /* Who wrote this module? */
+MODULE_DESCRIPTION(DRIVER_DESC);	/* What does this module do */
+
+
+#define procfs_name "get_num_pagefaults"
+
+static unsigned long *counter_buf;     // a place to copy the VM stats
+struct proc_dir_entry *Our_Proc_File;  // our /proc entry
+
+// This function (partially based on code in procfs1.c) will:
+// 
+//   (1) fetch the current VM subsystem statistics using the
+//       all_vm_events kernel function.  We previously allocated
+//       space for the statistics in init_module().
+//
+//   (2) uses the kernel sprintf to print the number of page faults
+//       into a string
+//
+//   (3) returns that string to the /proc subsystem in the kernel
+
+int procfile_read(char *buffer, char **buffer_location,
+                  off_t offset, int buffer_length, int *eof, void *data) {
+  int ret;
+
+  if (offset > 0) {
+     ret = 0;
+  } else {
+     all_vm_events(counter_buf);
+     ret = sprintf(buffer, "%lu\n", counter_buf[PGFAULT]);
+//     ret = sprintf(buffer, "%lu %lu\n",
+//                   counter_buf[PGFAULT], counter_buf[PGMAJFAULT]);
+  }
+  return ret;
+}
+
+
+// Here is where our kernel module is initialized when it is inserted.
+// We do two things:
+//
+//   (1) allocate space for the VM statistics.
+//
+//   (2) insert ourselves into /proc/get_num_pagefaults, and register
+//       procfile_read to handle reads.
+//
+int init_module(void)
+{
+       // allocate space
+        counter_buf = kmalloc(NR_VM_ZONE_STAT_ITEMS * sizeof(unsigned long)
+                                + sizeof(struct vm_event_state) + 100,
+                              GFP_KERNEL);  // extra 100 is "just in case" :)
+        if (counter_buf == NULL) {
+            printk("Crud! kmalloc failed.\n");
+        }
+
+        // insert into /proc
+	Our_Proc_File = create_proc_entry(procfs_name, 0644, NULL);
+	
+	if (Our_Proc_File == NULL) {
+		remove_proc_entry(procfs_name, &proc_root);
+		printk(KERN_ALERT "Error: Could not initialize /proc/%s\n",
+		       procfs_name);
+		return -ENOMEM;
+	}
+	Our_Proc_File->read_proc = procfile_read;
+	Our_Proc_File->owner 	 = THIS_MODULE;
+	Our_Proc_File->mode 	 = S_IFREG | S_IRUGO;
+	Our_Proc_File->uid 	 = 0;
+	Our_Proc_File->gid 	 = 0;
+	Our_Proc_File->size 	 = 37;  // proc reports our file size as 37.
+                                        // why 37? no particularly good reason.
+
+	printk(KERN_INFO "/proc/%s created\n", procfs_name);	
+
+	/* 
+	 * A non 0 return means init_module failed; module can't be loaded. 
+	 */
+	return 0;
+}
+
+// this gets called when our module is removed.  We will remove the
+// proc entry, and free our allocated memory.
+void cleanup_module(void)
+{
+	printk(KERN_INFO "Goodbye world 1.\n");
+	remove_proc_entry(procfs_name, &proc_root);
+	printk(KERN_INFO "/proc/%s removed\n", procfs_name);
+        if (counter_buf != NULL) {
+            kfree(counter_buf);
+            counter_buf = NULL;
+        }
+}

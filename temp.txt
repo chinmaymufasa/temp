@@ -1,22 +1,113 @@
-#include <linux/fs.h>
- #include <linux/init.h>
- #include <linux/kernel.h>
- #include <linux/proc_fs.h>
- #include <linux/seq_file.h>
- #include <linux/utsname.h>
-
- static int version_proc_show(struct seq_file *m, void *v)
- {
- 	seq_printf(m, linux_proc_banner,
- 		utsname()->sysname,
- 		utsname()->release,
- 		utsname()->version);
- 	return 0;
- }
-
- static int __init proc_version_init(void)
- {
- 	proc_create_single("version", 0, NULL, version_proc_show);
- 	return 0;
- }
- fs_initcall(proc_version_init);
+#include <linux/kernel.h> /* We are doing kernel work */ 
+7#include <linux/module.h> /* Specifically, a module */ 
+8#include <linux/proc_fs.h> /* Necessary because we use proc fs */ 
+9#include <linux/seq_file.h> /* for seq_file */ 
+10#include <linux/version.h> 
+11 
+12#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0) 
+13#define HAVE_PROC_OPS 
+14#endif 
+15 
+16#define PROC_NAME "iter" 
+17 
+18/* This function is called at the beginning of a sequence. 
+19 * ie, when: 
+20 *   - the /proc file is read (first time) 
+21 *   - after the function stop (end of sequence) 
+22 */ 
+23static void *my_seq_start(struct seq_file *s, loff_t *pos) 
+24{ 
+25    static unsigned long counter = 0; 
+26 
+27    /* beginning a new sequence? */ 
+28    if (*pos == 0) { 
+29        /* yes => return a non null value to begin the sequence */ 
+30        return &counter; 
+31    } 
+32 
+33    /* no => it is the end of the sequence, return end to stop reading */ 
+34    *pos = 0; 
+35    return NULL; 
+36} 
+37 
+38/* This function is called after the beginning of a sequence. 
+39 * It is called untill the return is NULL (this ends the sequence). 
+40 */ 
+41static void *my_seq_next(struct seq_file *s, void *v, loff_t *pos) 
+42{ 
+43    unsigned long *tmp_v = (unsigned long *)v; 
+44    (*tmp_v)++; 
+45    (*pos)++; 
+46    return NULL; 
+47} 
+48 
+49/* This function is called at the end of a sequence. */ 
+50static void my_seq_stop(struct seq_file *s, void *v) 
+51{ 
+52    /* nothing to do, we use a static value in start() */ 
+53} 
+54 
+55/* This function is called for each "step" of a sequence. */ 
+56static int my_seq_show(struct seq_file *s, void *v) 
+57{ 
+58    loff_t *spos = (loff_t *)v; 
+59 
+60    seq_printf(s, "%Ld\n", *spos); 
+61    return 0; 
+62} 
+63 
+64/* This structure gather "function" to manage the sequence */ 
+65static struct seq_operations my_seq_ops = { 
+66    .start = my_seq_start, 
+67    .next = my_seq_next, 
+68    .stop = my_seq_stop, 
+69    .show = my_seq_show, 
+70}; 
+71 
+72/* This function is called when the /proc file is open. */ 
+73static int my_open(struct inode *inode, struct file *file) 
+74{ 
+75    return seq_open(file, &my_seq_ops); 
+76}; 
+77 
+78/* This structure gather "function" that manage the /proc file */ 
+79#ifdef HAVE_PROC_OPS 
+80static const struct proc_ops my_file_ops = { 
+81    .proc_open = my_open, 
+82    .proc_read = seq_read, 
+83    .proc_lseek = seq_lseek, 
+84    .proc_release = seq_release, 
+85}; 
+86#else 
+87static const struct file_operations my_file_ops = { 
+88    .open = my_open, 
+89    .read = seq_read, 
+90    .llseek = seq_lseek, 
+91    .release = seq_release, 
+92}; 
+93#endif 
+94 
+95static int __init procfs4_init(void) 
+96{ 
+97    struct proc_dir_entry *entry; 
+98 
+99    entry = proc_create(PROC_NAME, 0, NULL, &my_file_ops); 
+100    if (entry == NULL) { 
+101        remove_proc_entry(PROC_NAME, NULL); 
+102        pr_debug("Error: Could not initialize /proc/%s\n", PROC_NAME); 
+103        return -ENOMEM; 
+104    } 
+105 
+106    return 0; 
+107} 
+108 
+109static void __exit procfs4_exit(void) 
+110{ 
+111    remove_proc_entry(PROC_NAME, NULL); 
+112    pr_debug("/proc/%s removed\n", PROC_NAME); 
+113} 
+114 
+115module_init(procfs4_init); 
+116module_exit(procfs4_exit); 
+117 
+118MODULE_LICENSE("GPL");
